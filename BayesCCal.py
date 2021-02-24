@@ -62,7 +62,7 @@ class calibrator_binary():
     Example:
         from sklearn.linear_model import LogisticRegression
 
-        from CBIO import calibrator_binary
+        from BayesCCal import calibrator_binary
         import numpy as np
         
         def genData(d_prime, N, ppos):
@@ -91,31 +91,47 @@ class calibrator_binary():
         else:
             raise Exception("Classifier has not all the needed methods");
     def __maxLike__(self,p):
+        # prepare grid
         pi = np.linspace(0,1,self.pisamples).reshape(self.pisamples,1)
+        # convert probabilities to grid cells
         idx = np.floor(p*self.bins).astype(int)
         l = idx.shape[0]
+        
+        # make sure inices are in the right range
+        idx[idx>=self.bins]=self.bins-1
+        
+        # define log likelihood function
         logL = np.sum(np.log(self.hxt[idx].reshape(1,l) * pi + 
                              self.hxf[idx].reshape(1,l) * (1-pi)), axis = 1)
+        
+        # get maximum likelihood
         maxL = pi[np.argmax(logL)][0]
         return maxL
     def __getdens__(self, X,y):
+        
+        # define basis for histograms
         Ng = self.bins;
         p = self.classifier.predict_proba(X);
         dx = 1/Ng;
     
+        # Separate positives from negatives
         pxt = p[y==True,1]
         pxf = p[y==False,1]
     
+        # calculate histograms
         hxt = np.histogram(pxt,bins = np.linspace(0,1,Ng+1), density=True)[0]
         hxf = np.histogram(pxf,bins = np.linspace(0,1,Ng+1), density=True)[0]
     
+        # make sure the sum to 1
         hxt *= dx
         hxf *= dx
         return hxt, hxf
     
     def fit(self, X, y, **kwargs):
         """
-        Fit the data according to the training data. The method cals the fit method of the classifier and determines the distributions of positive and negative scores
+        Fit the data according to the training data. The method cals the fit 
+        method of the classifier and determines the distributions of 
+        positive and negative scores.
         
         Parameters
         ----------
@@ -167,10 +183,10 @@ class calibrator_binary():
         proba = self.classifier.predict_proba(X)
         pi = self.__maxLike__(proba[:,1])
         self.pi = pi
-        print(pi)
         s = np.sort(proba[:,1])
+        
+        # Find index belonging to threshold
         idx = int((1-pi)*s.shape[0])
-        print(idx)
         if idx >= s.shape[0]:
             idx-= 1
         self.threshold = s[idx]
@@ -191,7 +207,7 @@ class calibrator_binary():
         Example:
         from sklearn.linear_model import LogisticRegression
 
-        from CBIO import calibrator_binary
+        from BayesCCal import calibrator_binary
         import numpy as np
         
         def genData(d_prime, N, ppos):
@@ -217,5 +233,68 @@ class calibrator_binary():
         else:
             proba = self.classifier.predict_proba(X)
         return proba[:,1]>=self.threshold
+    def compareDists(self,X):
+        """
+        Compare distribution of dataset (X) with th training set with respect to the proportion positives
         
+        Parameters
+        ----------
+        X: same shape as needed for classifier
+            dataset for which the class labels need to be predicted
+        
+        Returns
+        -------
+        Dictionary with:
+            cs: cosine similarity
+            K-S: Kolmogorov Smirnov statistic.
+            D_KL: Kulback Leibler divergence
+            
+        Example:
+        from sklearn.linear_model import LogisticRegression
+
+        from BayesCCal import calibrator_binary
+        import numpy as np
+        
+        def genData(d_prime, N, ppos):
+            X = np.random.normal(0, 1, N)
+            y = np.random.rand(N)<=ppos
+            X[y] += d_prime
+            X = X.reshape(-1,1)
+            return X,y
+        
+        
+        X, y = genData(2,400,.5)
+        clf = LogisticRegression(random_state=0, fit_intercept=True)
+        cal = calibrator_binary(clf, bins=10)
+        cal.fit(X,y)
+        Xtest, ytest = genData(2,100,.2)
+        print(cal.compareDists(Xtest))
+        Xtest = Xtest +2
+        print(cal.compareDists(Xtest))
+        """
+
+        # Calculate histogram for X        
+        Ng = self.bins;
+        p = self.classifier.predict_proba(X);
+        pi = self.getProportion(X)
+        dx = 1/Ng;
+        hx1 = np.histogram(p[:,1],bins = np.linspace(0,1,Ng+1), density=True)[0]
+        hx1 *= dx
+        
+        # calculate the training histogram for proportion pi
+        hx0 = pi*self.hxt + (1-pi)*self.hxf
+        
+        ## cosine similarity
+        cs = np.sum(hx0*hx1)/np.sqrt(np.sum(hx0*hx0)*np.sum(hx1*hx1))
+        
+        ## Kolmogorov Smirnov Statistic
+        ks = np.max(np.abs(np.cumsum(hx0)-np.cumsum(hx1)))
+        
+        ## Kulback Leibler Divergence
+        # calculate epsilon to prevent division by zero
+        epsilon = min(np.min(hx0[hx0>0]), np.min(hx1[hx1>0]))/1000.0
+        dkl = np.sum(hx0 * np.log((hx0+epsilon) / (hx1+epsilon)))
+        
+        return {"cs": cs, "K-S": ks, "D_KL": dkl}
+         
         
