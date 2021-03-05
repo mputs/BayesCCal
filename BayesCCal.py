@@ -12,6 +12,9 @@ Only binary classificication is implemented at the moment,
 """
 
 import numpy as np
+from scipy.stats import chi2
+from scipy.optimize import minimize
+from scipy.stats import beta
 
 def checkattr(classifier):
     try:
@@ -20,6 +23,14 @@ def checkattr(classifier):
     except:
         return -1
     return 0
+
+def DKL(hx0, hx1):
+    epsilon = min(np.min(hx0[hx0>0]), np.min(hx1[hx1>0]))/1000.0
+    dkl = np.sum(hx1 * np.log((hx1+epsilon) / (hx0+epsilon)))
+    return dkl
+
+
+
 
 class calibrator_binary():
     """
@@ -83,30 +94,44 @@ class calibrator_binary():
 
     """
     
-    def __init__(self, classifier, bins = 3, pisamples=1001):
+    def __init__(self, classifier, bins = 3, pisamples=1001, density="hist"):
         if not checkattr(classifier):   
             self.classifier = classifier
             self.bins = bins;
             self.pisamples = pisamples
+            self.density = density
         else:
             raise Exception("Classifier has not all the needed methods");
+    def __getDensities__(self, p):
+        if self.density == "hist":
+            idx = np.floor(p*self.bins).astype(int)
+            l = idx.shape[0]
+            # make sure inices are in the right range
+            idx[idx>=self.bins]=self.bins-1
+            return self.hxt[idx].reshape(1,l), self.hxf[idx].reshape(1,l)
+        else:
+            l = p.shape[0]
+            return beta.pdf(p,self.betat[0], self.betat[1]), beta.pdf(p, self.betaf[0], self.betaf[1]).reshape(1,l)
+            
     def __maxLike__(self,p):
-        # prepare grid
-        pi = np.linspace(0,1,self.pisamples).reshape(self.pisamples,1)
-        # convert probabilities to grid cells
-        idx = np.floor(p*self.bins).astype(int)
-        l = idx.shape[0]
+        def __f__(pi):
+            
+            dt, df = self.__getDensities__(p)
+            return -np.sum(np.log(dt * pi + df * (1-pi)), axis = 1)
+        def __fprime__(pi):
+            dt, df = self.__getDensities__(p)            
+            num = dt-df
+            den = dt * pi + df * (1-pi)
+                
+            return -np.sum(num/den, axis = 1)
+        result = minimize(__f__,   .5,  method = "L-BFGS-B", bounds = [(0,1)], jac = __fprime__)
+        if(result.success==True):
+            return result.x[0];
+        else:
+            print(result)
+            return result.x[0];
         
-        # make sure inices are in the right range
-        idx[idx>=self.bins]=self.bins-1
-        
-        # define log likelihood function
-        logL = np.sum(np.log(self.hxt[idx].reshape(1,l) * pi + 
-                             self.hxf[idx].reshape(1,l) * (1-pi)), axis = 1)
-        
-        # get maximum likelihood
-        maxL = pi[np.argmax(logL)][0]
-        return maxL
+
     def __getdens__(self, X,y):
         
         # define basis for histograms
@@ -126,6 +151,25 @@ class calibrator_binary():
         hxt *= dx
         hxf *= dx
         return hxt, hxf
+    def __estbetas__(self,X,y):
+        p = self.classifier.predict_proba(X);
+        def estbeta(p):
+            mn = np.mean(p)
+            vr = np.var(p)
+            q = (mn*(1-mn)/vr)-1
+            alpha = mn*q
+            beta = (1-mn)*q
+            return (alpha,beta)
+        pxt = p[y==True,1]
+        pxf = p[y==False,1]
+        return estbeta(pxt), estbeta(pxf)
+    
+    def calcHistogram(self, X, y, bins = 3):
+        self.bins = bins;
+        self.hxt, self.hxf = __getdens__(X,y)
+        self.betat, self.betaf = __estbetas__(X,y)
+        return self.hxt, self.hxf
+    
     
     def fit(self, X, y, **kwargs):
         """
@@ -147,6 +191,8 @@ class calibrator_binary():
         self.kwargs = kwargs;
         self.classifier.fit(X,y, **kwargs);
         self.hxt, self.hxf = self.__getdens__(X,y)
+        self.betat, self.betaf = self.__estbetas__(X,y)
+        self.n = X.shape[0]
         return self
         
     def getProportion(self, X):
@@ -247,7 +293,7 @@ class calibrator_binary():
         Dictionary with:
             cs: cosine similarity
             K-S: Kolmogorov Smirnov statistic.
-            D_KL: Kulback Leibler divergence
+            D_KL: Symetric Kulback Leibler divergence
             
         Example:
         from sklearn.linear_model import LogisticRegression
@@ -274,6 +320,7 @@ class calibrator_binary():
         """
 
         # Calculate histogram for X        
+        m = X.shape[0]
         Ng = self.bins;
         p = self.classifier.predict_proba(X);
         pi = self.getProportion(X)
@@ -284,17 +331,22 @@ class calibrator_binary():
         # calculate the training histogram for proportion pi
         hx0 = pi*self.hxt + (1-pi)*self.hxf
         
-        ## cosine similarity
-        cs = np.sum(hx0*hx1)/np.sqrt(np.sum(hx0*hx0)*np.sum(hx1*hx1))
         
         ## Kolmogorov Smirnov Statistic
         ks = np.max(np.abs(np.cumsum(hx0)-np.cumsum(hx1)))
         
-        ## Kulback Leibler Divergence
+        ## Symetric Kulback Leibler Divergence
         # calculate epsilon to prevent division by zero
-        epsilon = min(np.min(hx0[hx0>0]), np.min(hx1[hx1>0]))/1000.0
-        dkl = np.sum(hx0 * np.log((hx0+epsilon) / (hx1+epsilon)))
+        # we test how many nats would be gained when we would 
+        # use the real histogram instead of our model
+        # Dkl(h1||h0)
+        dkl = (DKL(hx0,hx1) + DKL(hx1,hx0))/2 
         
-        return {"cs": cs, "K-S": ks, "D_KL": dkl}
+        ## Chi Squared test
+        Hx1 = hx1*m+.0001
+        Hx0 = hx0*m+.0001
+        chisqr = np.sum(((Hx1-Hx0)**2)/Hx0)
+        
+        return {"K-S": ks, "D_KL": dkl, "chi2": chisqr, "chi2 sig": chi2.cdf(chisqr, Ng)}
          
         
