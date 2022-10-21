@@ -14,7 +14,82 @@ Only binary classificication is implemented at the moment,
 import numpy as np
 from scipy.stats import chi2
 from scipy.optimize import minimize
-from scipy.stats import beta
+from scipy.integrate import quad
+from inspect import isclass
+
+class __DensEst__():
+    def __init__(self, radius=.1):
+        self.radius = radius
+    def init(self, scores):
+        # initialize with scores
+        self.scores = np.sort(scores,axis=0)
+        self.area = quad(self.__freqs__,0,1)[0]
+    def pdf(self,X):
+        return self.__freqs__(X)/self.area
+    def __freqs__(self,X):
+        if not hasattr(X, "shape"):
+            X = np.array(X).reshape(1,)
+        r = self.radius
+        # calculate values
+        length = X.shape[0]
+        s = self.scores.flatten();
+        ls = s.shape[0]
+        s = s.reshape(ls,1)
+        x = X.flatten();
+        lx = x.shape[0]
+        x = x.reshape(1,lx)
+        ss = np.repeat(s, lx, axis=1)
+        xx = np.repeat(x, ls, axis=0)
+        xxl = xx - r
+        xxl [xxl<0]=0
+        xxh = xx + r
+        xxh [xxh>1]=1
+        idxl = ((xx - r - ss)**2).argmin(axis=0)
+        idxh = ((xx + r - ss)**2).argmin(axis=0)
+        size = xxh[idxh,np.arange(lx)]-xxl[idxl,np.arange(lx)].flatten()
+        n = ((idxh-idxl)/size)
+        return n
+    
+    
+class myEst1():
+    def __init__(self, N=1000, radius=.1, eps=1e-20):
+        self.N = N
+        self.R = radius*N
+        self.eps = eps;
+    def init(self, scores):
+        hist = np.histogram(scores, range=(0,1), bins=self.N)
+        cumhist = np.cumsum(hist[0])
+        index = np.arange(0,self.N,1)
+        indexL = (index - self.R).astype(int)
+        indexH = (index + self.R).astype(int)
+        indexL[indexL<0]=0
+        indexH[indexH>=self.N]=self.N-1
+        H = (cumhist[indexH]-cumhist[indexL])/(indexH-indexL)
+        H += np.sum(H)*self.eps
+        
+        self.H = H / np.sum(H)
+    def pdf(self, X):
+        idx = (X*(self.N-1)).astype(int)
+        return self.H[idx]
+    
+class __HistEst__():
+    def __init__(self, bins = 3):
+        self.bins = bins
+    def init(self,scores):
+        self.scores = scores
+        # calculate histograms
+        hx = np.histogram(scores,bins = np.linspace(0,1,self.bins+1), density=True)[0]
+        # make sure the sum to 1
+        self.hx = hx/self.bins
+    def pdf(self,X):
+        idx = np.floor(X*self.bins).astype(int)
+        l = idx.shape[0]
+        # make sure indices are in the right range
+        idx[idx>=self.bins]=self.bins-1
+        return self.hx[idx].reshape(1,l)
+
+
+
 
 def checkattr(classifier):
     try:
@@ -94,24 +169,49 @@ class calibrator_binary():
 
     """
     
-    def __init__(self, classifier, bins = 3, pisamples=1001, density="hist"):
+    def __init__(self, classifier, bins = 3, radius = .1, pisamples=1001, density="dens"):
         if not checkattr(classifier):   
             self.classifier = classifier
             self.bins = bins;
+            self.radius = radius;
             self.pisamples = pisamples
-            self.density = density
+            if density == "hist":
+                self.density_t = __HistEst__(bins = bins)
+                self.density_f = __HistEst__(bins = bins)
+            elif density == "dens":
+                self.density_t = __DensEst__(radius = radius)
+                self.density_f = __DensEst__(radius = radius)
+            elif density == "test":
+                self.density_t = myEst1()
+                self.density_f = myEst1()
+            elif isinstance(density, tuple):
+                if len(density) == 2:
+                    def __checkattr__(density):
+                        try:
+                            assert(hasattr(density, "pdf"))
+                            assert(hasattr(density, "init"))
+                        except:
+                            return -1
+                        return 0
+                    if not __checkattr__(density[0]):
+                        self.density_t = density[0]
+                    else: 
+                        raise Exception("first object in density argument is not an expected object" )
+                    if not __checkattr__(density[1]):
+                        self.density_f = density[1]
+                    else:
+                        raise Exception("second object in density argument is not an expected object")
+                else:
+                    raise Exception("density must be \"hist\", \"est\", or a tuple of objects having an init() method and a pdf() method")
+                
+            else:
+                raise Exception("non valid argument for density: {}".format(density))
+            
         else:
             raise Exception("Classifier has not all the needed methods");
     def __getDensities__(self, p):
-        if self.density == "hist":
-            idx = np.floor(p*self.bins).astype(int)
-            l = idx.shape[0]
-            # make sure inices are in the right range
-            idx[idx>=self.bins]=self.bins-1
-            return self.hxt[idx].reshape(1,l), self.hxf[idx].reshape(1,l)
-        else:
             l = p.shape[0]
-            return beta.pdf(p,self.betat[0], self.betat[1]), beta.pdf(p, self.betaf[0], self.betaf[1]).reshape(1,l)
+            return self.density_t.pdf(p).reshape(1,l), self.density_f.pdf(p).reshape(1,l)
             
     def __maxLike__(self,p):
         def __f__(pi):
@@ -122,7 +222,6 @@ class calibrator_binary():
             dt, df = self.__getDensities__(p)            
             num = dt-df
             den = dt * pi + df * (1-pi)
-                
             return -np.sum(num/den, axis = 1)
         result = minimize(__f__,   .5,  method = "L-BFGS-B", bounds = [(0,1)], jac = __fprime__)
         if(result.success==True):
@@ -130,47 +229,16 @@ class calibrator_binary():
         else:
             print(result)
             return result.x[0];
-        
+              
+    
+    def calcDensities(self, X, y):
+        p = self.classifier.predict_proba(X);
+        pxt = p[y==True,1]
+        pxf = p[y==False,1]        
+        self.density_t.init(pxt);
+        self.density_f.init(pxf);
 
-    def __getdens__(self, X,y):
         
-        # define basis for histograms
-        Ng = self.bins;
-        p = self.classifier.predict_proba(X);
-        dx = 1/Ng;
-    
-        # Separate positives from negatives
-        pxt = p[y==True,1]
-        pxf = p[y==False,1]
-    
-        # calculate histograms
-        hxt = np.histogram(pxt,bins = np.linspace(0,1,Ng+1), density=True)[0]
-        hxf = np.histogram(pxf,bins = np.linspace(0,1,Ng+1), density=True)[0]
-    
-        # make sure the sum to 1
-        hxt *= dx
-        hxf *= dx
-        return hxt, hxf
-    def __estbetas__(self,X,y):
-        p = self.classifier.predict_proba(X);
-        def estbeta(p):
-            mn = np.mean(p)
-            vr = np.var(p)
-            q = (mn*(1-mn)/vr)-1
-            alpha = mn*q
-            beta = (1-mn)*q
-            return (alpha,beta)
-        pxt = p[y==True,1]
-        pxf = p[y==False,1]
-        return estbeta(pxt), estbeta(pxf)
-    
-    def calcHistogram(self, X, y, bins = 3):
-        self.bins = bins;
-        self.hxt, self.hxf = __getdens__(X,y)
-        self.betat, self.betaf = __estbetas__(X,y)
-        return self.hxt, self.hxf
-    
-    
     def fit(self, X, y, **kwargs):
         """
         Fit the data according to the training data. The method cals the fit 
@@ -190,8 +258,7 @@ class calibrator_binary():
         """
         self.kwargs = kwargs;
         self.classifier.fit(X,y, **kwargs);
-        self.hxt, self.hxf = self.__getdens__(X,y)
-        self.betat, self.betaf = self.__estbetas__(X,y)
+        self.calcDensities(X,y)
         self.n = X.shape[0]
         return self
         
@@ -239,7 +306,7 @@ class calibrator_binary():
         self.__proba__ = proba
         return self.threshold        
     
-    def predict(self, X, new_threshold = False):
+    def predict(self, X, new_threshold = True):
         """
         Predict class labels of X
         
@@ -279,6 +346,47 @@ class calibrator_binary():
         else:
             proba = self.classifier.predict_proba(X)
         return proba[:,1]>=self.threshold
+    
+    def predict_proba(self, X):
+        """
+        Calculate probabilities class labels of X
+        
+        Parameters
+        ----------
+        X: same shape as needed for classifier
+            dataset for which the class labels need to be predicted
+        new_threshold: Boolean (default = False)
+            determines if a new threshold needs to be calculated if already exists. 
+            
+        Example:
+        from sklearn.linear_model import LogisticRegression
+
+        from BayesCCal import calibrator_binary
+        import numpy as np
+        
+        def genData(d_prime, N, ppos):
+            X = np.random.normal(0, 1, N)
+            y = np.random.rand(N)<=ppos
+            X[y] += d_prime
+            X = X.reshape(-1,1)
+            return X,y
+        
+        
+        X, y = genData(2,400,.5) #training set: 50% positive, 50% negative
+        clf = LogisticRegression(random_state=0, fit_intercept=True)
+        cal = calibrator_binary(clf)
+        cal.fit(X,y)
+        Xtest, ytest = genData(2,200,.2) 
+        ppred_proba = cal.predict_proba(Xtest)
+        """
+        proba = self.classifier.predict_proba(X)[:,1]
+        pt = self.density_t.pdf(proba)
+        pf = self.density_f.pdf(proba)
+        self.pi = self.__maxLike__(proba)
+        p = self.pi*pt/(self.pi*pt+(1-self.pi)*pf)
+        p = p.reshape(p.shape[0],1)
+        return np.hstack([1-p,p]);
+
     def compareDists(self,X):
         """
         Compare distribution of dataset (X) with th training set with respect to the proportion positives
