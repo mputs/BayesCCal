@@ -51,7 +51,7 @@ class __DensEst__():
         return n
     
     
-class myEst1():
+class WatermanEst():
     def __init__(self, N=1000, radius=.1, eps=1e-20):
         self.N = N
         self.R = radius*N
@@ -169,7 +169,7 @@ class calibrator_binary():
 
     """
     
-    def __init__(self, classifier, bins = 3, radius = .1, pisamples=1001, density="dens"):
+    def __init__(self, classifier, bins = 3, radius = .1, pisamples=1001, density="Waterman"):
         if not checkattr(classifier):   
             self.classifier = classifier
             self.bins = bins;
@@ -181,9 +181,9 @@ class calibrator_binary():
             elif density == "dens":
                 self.density_t = __DensEst__(radius = radius)
                 self.density_f = __DensEst__(radius = radius)
-            elif density == "test":
-                self.density_t = myEst1()
-                self.density_f = myEst1()
+            elif density == "Waterman":
+                self.density_t = WatermanEst()
+                self.density_f = WatermanEst()
             elif isinstance(density, tuple):
                 if len(density) == 2:
                     def __checkattr__(density):
