@@ -1,2 +1,3 @@
 
-from BayesCCal import *
+from .BayesCCal import *
+

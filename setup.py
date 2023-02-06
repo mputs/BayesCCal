@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-
 from distutils.core import setup
 
 setup(name='BayesCCal',
@@ -8,4 +7,5 @@ setup(name='BayesCCal',
       author='Marco Puts',
       author_email='mputs@acm.org',
       packages=['BayesCCal'],
+      install_requires=['numpy','scipy']
      )
