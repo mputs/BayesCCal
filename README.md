@@ -7,6 +7,8 @@ For now, the module can be installed by:
 pip install git+https://github.com/mputs/BayesCCal.git
 ```
 
+The module is compatible with classifiers in scikit-learn, as long as predict_proba is implemented.
+
 ## a simple example
 
 For the example, we will use the Banknote Authentication dataset. First we will import the data and only select two features:
