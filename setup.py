@@ -25,5 +25,5 @@ setup(name='BayesCCal',
       author='Marco Puts',
       author_email='mputs@acm.org',
       packages=['BayesCCal'],
-      install_requires=['numpy', 'scipy']
+      install_requires=['numpy', 'scipy'],
      )
