@@ -22,6 +22,7 @@ def get_version(rel_path):
 setup(name='BayesCCal',
       version=get_version("BayesCCal/__init__.py"),
       description='Bayesian calibration of classifiers',
+      long_description='Bayesian calibration of classifiers',
       author='Marco Puts',
       author_email='mputs@acm.org',
       packages=['BayesCCal'],
