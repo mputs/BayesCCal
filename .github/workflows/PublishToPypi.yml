@@ -39,4 +39,4 @@ jobs:
     - name: Publish distribution 📦 to Test PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
       with:
-        password: ${{ secrets.TESTPYPI_PASSWORD }}
+        password: ${{ secrets.PYPI_PASSWORD }}
